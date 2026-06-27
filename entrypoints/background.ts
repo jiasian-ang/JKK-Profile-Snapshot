@@ -8,23 +8,27 @@ import {
   getSnapshotKey,
   getSupportedOrigin,
   isSnapshotRecord,
+  normalizeRedirects,
+  resolveRedirectUrl,
   summarizeSnapshot,
   type ActionResult,
   type PopupState,
   type ProfileSnapshot,
   type SiteSnapshotGroup,
   type SnapshotCookie,
+  type SnapshotRedirect,
   type SnapshotSummary,
 } from '@/utils/snapshots';
 
 type Request =
   | { type: 'GET_STATE' }
   | { type: 'CREATE_SNAPSHOT'; tabId: number; name?: string }
-  | { type: 'APPLY_SNAPSHOT'; tabId: number; snapshotId: string }
+  | { type: 'APPLY_SNAPSHOT'; tabId: number; snapshotId: string; redirectId?: string }
   | { type: 'DELETE_SNAPSHOT'; snapshotId: string }
   | { type: 'CLEAR_ORIGIN'; tabId: number }
   | { type: 'DELETE_ALL_SNAPSHOTS' }
-  | { type: 'GET_SNAPSHOT'; snapshotId: string };
+  | { type: 'GET_SNAPSHOT'; snapshotId: string }
+  | { type: 'SET_SNAPSHOT_REDIRECTS'; snapshotId: string; redirects: SnapshotRedirect[] };
 
 type WebStorageDump = {
   localStorage: Record<string, string>;
@@ -48,7 +52,7 @@ async function handleRequest(request: Request) {
     case 'CREATE_SNAPSHOT':
       return createSnapshot(request.tabId, request.name);
     case 'APPLY_SNAPSHOT':
-      return applySnapshot(request.tabId, request.snapshotId);
+      return applySnapshot(request.tabId, request.snapshotId, request.redirectId);
     case 'DELETE_SNAPSHOT':
       return deleteSnapshot(request.snapshotId);
     case 'CLEAR_ORIGIN':
@@ -57,6 +61,8 @@ async function handleRequest(request: Request) {
       return deleteAllSnapshots();
     case 'GET_SNAPSHOT':
       return getSnapshot(request.snapshotId);
+    case 'SET_SNAPSHOT_REDIRECTS':
+      return setSnapshotRedirects(request.snapshotId, request.redirects);
   }
 }
 
@@ -116,6 +122,7 @@ async function createSnapshot(tabId: number, requestedName?: string): Promise<Ac
       cookies,
       localStorage: webStorage.localStorage,
       sessionStorage: webStorage.sessionStorage,
+      redirects: [],
     };
     const snapshot: ProfileSnapshot = {
       ...withoutSize,
@@ -129,7 +136,11 @@ async function createSnapshot(tabId: number, requestedName?: string): Promise<Ac
   }
 }
 
-async function applySnapshot(tabId: number, snapshotId: string): Promise<ActionResult> {
+async function applySnapshot(
+  tabId: number,
+  snapshotId: string,
+  redirectId?: string,
+): Promise<ActionResult> {
   const snapshot = await getStoredSnapshot(snapshotId);
   if (!snapshot) return fail('Snapshot not found.');
 
@@ -140,11 +151,23 @@ async function applySnapshot(tabId: number, snapshotId: string): Promise<ActionR
     return fail(`Open ${snapshot.origin} before applying this snapshot.`);
   }
 
+  const redirect = redirectId
+    ? (snapshot.redirects ?? []).find((item) => item.id === redirectId)
+    : undefined;
+  const redirectUrl = redirect ? resolveRedirectUrl(snapshot.origin, redirect.path) : undefined;
+
   try {
     await clearOriginState(tabId, false);
     const cookieErrors = await restoreCookies(snapshot);
     await writeWebStorage(tabId, snapshot);
-    await browser.tabs.reload(tabId);
+
+    if (redirectUrl) {
+      await browser.tabs.update(tabId, { url: redirectUrl });
+    } else {
+      await browser.tabs.reload(tabId);
+    }
+
+    const destination = redirectUrl ? ` Opening ${redirect!.path}.` : ' The tab was reloaded.';
 
     if (cookieErrors.length > 0) {
       return {
@@ -154,7 +177,7 @@ async function applySnapshot(tabId: number, snapshotId: string): Promise<ActionR
       };
     }
 
-    return { ok: true, message: 'Snapshot applied. The tab was reloaded.' };
+    return { ok: true, message: `Snapshot applied.${destination}` };
   } catch (error) {
     return fail(toFriendlyError(error, 'Unable to apply snapshot.'));
   }
@@ -175,6 +198,28 @@ async function getSnapshot(snapshotId: string) {
   const snapshot = await getStoredSnapshot(snapshotId);
   if (!snapshot) return { ok: false, message: 'Snapshot not found.' };
   return { ok: true, snapshot };
+}
+
+async function setSnapshotRedirects(
+  snapshotId: string,
+  redirects: SnapshotRedirect[],
+): Promise<ActionResult> {
+  const snapshot = await getStoredSnapshot(snapshotId);
+  if (!snapshot) return fail('Snapshot not found.');
+
+  try {
+    const base: Omit<ProfileSnapshot, 'sizeBytes'> & { sizeBytes?: number } = {
+      ...snapshot,
+      redirects: normalizeRedirects(snapshot.origin, redirects),
+      updatedAt: new Date().toISOString(),
+    };
+    const updated: ProfileSnapshot = { ...base, sizeBytes: calculateSnapshotSize(base) };
+
+    await browser.storage.local.set({ [getSnapshotKey(snapshot.id)]: updated });
+    return { ok: true, message: 'Redirect targets saved.' };
+  } catch (error) {
+    return fail(toFriendlyError(error, 'Unable to save redirect targets.'));
+  }
 }
 
 async function clearOriginState(tabId: number, reload: boolean): Promise<ActionResult> {

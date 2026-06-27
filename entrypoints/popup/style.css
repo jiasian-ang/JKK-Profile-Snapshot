@@ -515,6 +515,37 @@ h3 {
   transform: translateX(-50%) translateY(0);
 }
 
+.redirect-buttons {
+  border-top: 1px solid #eef1f5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+  padding-top: 8px;
+}
+
+.redirect-chip {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 26px;
+  overflow: hidden;
+  padding: 0 9px;
+}
+
+.redirect-chip svg {
+  flex: 0 0 auto;
+  height: 11px;
+  width: 11px;
+}
+
+.redirect-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ghost {
   background: #ffffff;
 }
@@ -653,6 +684,66 @@ h3 {
 
 .detail-section h3 {
   font-size: 13px;
+}
+
+.detail-hint {
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.redirect-item {
+  align-items: center;
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  background: #fbfcfe;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.redirect-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.redirect-meta strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.redirect-meta span {
+  color: #667085;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.redirect-item button {
+  min-height: 26px;
+  min-width: 26px;
+  padding: 0 8px;
+}
+
+.redirect-item svg {
+  display: block;
+  height: 12px;
+  margin: 0 auto;
+  width: 12px;
+}
+
+.redirect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.redirect-form-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .detail-item {

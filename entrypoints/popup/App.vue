@@ -1,8 +1,19 @@
 <script lang="ts" setup>
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome';
-import { faClockRotateLeft, faFileExport, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowRight,
+  faClockRotateLeft,
+  faFileExport,
+  faTrashCan,
+} from '@fortawesome/free-solid-svg-icons';
 import { computed, onMounted, ref } from 'vue';
-import { formatBytes, type ActionResult, type PopupState, type ProfileSnapshot } from '@/utils/snapshots';
+import {
+  formatBytes,
+  type ActionResult,
+  type PopupState,
+  type ProfileSnapshot,
+  type SnapshotRedirect,
+} from '@/utils/snapshots';
 
 type SnapshotPayload = ActionResult & {
   snapshot?: ProfileSnapshot;
@@ -19,6 +30,9 @@ const summaryOpen = ref(true);
 const selectedSnapshot = ref<ProfileSnapshot | null>(null);
 const detailLoading = ref(false);
 const createPanelOpen = ref(false);
+const newRedirectLabel = ref('');
+const newRedirectPath = ref('');
+const redirectBusy = ref(false);
 
 const WARNING_OPEN_KEY = 'profileSnapshotPopup:warningOpen';
 const SUMMARY_OPEN_KEY = 'profileSnapshotPopup:summaryOpen';
@@ -76,10 +90,17 @@ async function createSnapshot() {
   }
 }
 
-async function applySnapshot(snapshotId: string, snapshotName: string) {
+async function applySnapshot(
+  snapshotId: string,
+  snapshotName: string,
+  redirect?: SnapshotRedirect,
+) {
   if (!state.value?.tabId || busy.value) return;
+  const destination = redirect
+    ? `\n\nAfter applying, the tab opens ${redirect.path}.`
+    : '\n\nAfter applying, the tab reloads on the current page.';
   const confirmed = confirm(
-    `Apply "${snapshotName}"?\n\nThis will clear this site's current cookies, localStorage, and sessionStorage, then reload the tab.`,
+    `Apply "${snapshotName}"?\n\nThis will clear this site's current cookies, localStorage, and sessionStorage.${destination}`,
   );
   if (!confirmed) return;
 
@@ -87,6 +108,7 @@ async function applySnapshot(snapshotId: string, snapshotName: string) {
     type: 'APPLY_SNAPSHOT',
     tabId: state.value.tabId,
     snapshotId,
+    redirectId: redirect?.id,
   });
 }
 
@@ -159,6 +181,63 @@ async function openSnapshotDetails(snapshotId: string) {
 
 function closeSnapshotDetails() {
   selectedSnapshot.value = null;
+  newRedirectLabel.value = '';
+  newRedirectPath.value = '';
+}
+
+async function reloadSelectedSnapshot(snapshotId: string) {
+  const result = await sendMessage<SnapshotPayload>({ type: 'GET_SNAPSHOT', snapshotId });
+  if (result.ok && result.snapshot) selectedSnapshot.value = result.snapshot;
+}
+
+async function saveRedirects(snapshotId: string, redirects: SnapshotRedirect[]) {
+  if (redirectBusy.value) return false;
+  redirectBusy.value = true;
+  message.value = '';
+
+  try {
+    const result = await sendMessage<ActionResult>({
+      type: 'SET_SNAPSHOT_REDIRECTS',
+      snapshotId,
+      redirects,
+    });
+    if (!result.ok) {
+      message.value = result.message ?? 'Unable to save redirect targets.';
+      return false;
+    }
+    await reloadSelectedSnapshot(snapshotId);
+    await refreshState();
+    return true;
+  } catch (error) {
+    message.value = friendlyError(error, 'Unable to save redirect targets.');
+    return false;
+  } finally {
+    redirectBusy.value = false;
+  }
+}
+
+async function addRedirect() {
+  if (!selectedSnapshot.value) return;
+  const path = newRedirectPath.value.trim();
+  if (!path) return;
+
+  const next: SnapshotRedirect[] = [
+    ...(selectedSnapshot.value.redirects ?? []),
+    { id: '', label: newRedirectLabel.value.trim(), path },
+  ];
+  const saved = await saveRedirects(selectedSnapshot.value.id, next);
+  if (saved) {
+    newRedirectLabel.value = '';
+    newRedirectPath.value = '';
+  }
+}
+
+async function removeRedirect(redirectId: string) {
+  if (!selectedSnapshot.value) return;
+  const next = (selectedSnapshot.value.redirects ?? []).filter(
+    (redirect) => redirect.id !== redirectId,
+  );
+  await saveRedirects(selectedSnapshot.value.id, next);
 }
 
 async function runAction(payload: unknown) {
@@ -348,6 +427,19 @@ function saveDetailsPreference(key: string, event: Event) {
                 <FontAwesomeIcon :icon="faTrashCan" />
               </button>
             </div>
+            <div v-if="snapshot.redirects?.length" class="redirect-buttons">
+              <button
+                v-for="redirect in snapshot.redirects"
+                :key="redirect.id"
+                class="redirect-chip"
+                :disabled="busy"
+                :title="`Apply and open ${redirect.path}`"
+                @click="applySnapshot(snapshot.id, snapshot.name, redirect)"
+              >
+                <FontAwesomeIcon :icon="faArrowRight" />
+                <span>{{ redirect.label }}</span>
+              </button>
+            </div>
           </article>
         </section>
 
@@ -423,6 +515,55 @@ function saveDetailsPreference(key: string, event: Event) {
         <p class="dialog-warning">
           This view may expose session cookies, tokens, and client secrets.
         </p>
+
+        <div class="detail-section">
+          <h3>Redirect targets ({{ (selectedSnapshot.redirects ?? []).length }})</h3>
+          <p class="detail-hint">
+            Each target adds an apply button that restores this snapshot and then opens the path on
+            {{ selectedSnapshot.origin }}. The plain apply button keeps the current page.
+          </p>
+          <p v-if="(selectedSnapshot.redirects ?? []).length === 0" class="detail-empty">
+            No redirect targets yet.
+          </p>
+          <div
+            v-for="redirect in selectedSnapshot.redirects ?? []"
+            :key="redirect.id"
+            class="redirect-item"
+          >
+            <div class="redirect-meta">
+              <strong>{{ redirect.label }}</strong>
+              <span>{{ redirect.path }}</span>
+            </div>
+            <button
+              class="danger ghost"
+              :disabled="redirectBusy"
+              title="Remove target"
+              aria-label="Remove target"
+              @click="removeRedirect(redirect.id)"
+            >
+              <FontAwesomeIcon :icon="faTrashCan" />
+            </button>
+          </div>
+          <div class="redirect-form">
+            <input
+              v-model="newRedirectLabel"
+              :disabled="redirectBusy"
+              placeholder="Label (optional), e.g. Dashboard"
+              @keyup.enter="addRedirect"
+            />
+            <div class="redirect-form-row">
+              <input
+                v-model="newRedirectPath"
+                :disabled="redirectBusy"
+                placeholder="Path, e.g. /dashboard"
+                @keyup.enter="addRedirect"
+              />
+              <button :disabled="redirectBusy || !newRedirectPath.trim()" @click="addRedirect">
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
 
         <div class="detail-section">
           <h3>Cookies ({{ selectedSnapshot.cookies.length }})</h3>

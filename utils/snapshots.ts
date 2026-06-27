@@ -25,6 +25,12 @@ export type SnapshotCookie = {
   };
 };
 
+export type SnapshotRedirect = {
+  id: string;
+  label: string;
+  path: string;
+};
+
 export type ProfileSnapshot = {
   id: string;
   name: string;
@@ -36,11 +42,12 @@ export type ProfileSnapshot = {
   cookies: SnapshotCookie[];
   localStorage: Record<string, string>;
   sessionStorage: Record<string, string>;
+  redirects: SnapshotRedirect[];
 };
 
 export type SnapshotSummary = Pick<
   ProfileSnapshot,
-  'id' | 'name' | 'origin' | 'createdAt' | 'updatedAt' | 'sizeBytes' | 'storageTypes'
+  'id' | 'name' | 'origin' | 'createdAt' | 'updatedAt' | 'sizeBytes' | 'storageTypes' | 'redirects'
 > & {
   cookieCount: number;
   localStorageCount: number;
@@ -117,6 +124,42 @@ export function createSnapshotId(date = new Date()) {
   return `snapshot_${date.toISOString().replace(/[:]/g, '-')}`;
 }
 
+export function createRedirectId(date = new Date()) {
+  return `redirect_${date.getTime().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function resolveRedirectUrl(origin: string, path: string): string | undefined {
+  try {
+    const url = new URL(path, origin);
+    if (url.origin !== origin) return undefined;
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizeRedirects(
+  origin: string,
+  redirects: SnapshotRedirect[],
+): SnapshotRedirect[] {
+  const seen = new Set<string>();
+  const result: SnapshotRedirect[] = [];
+
+  for (const redirect of redirects ?? []) {
+    const path = (redirect?.path ?? '').trim();
+    if (!path || !resolveRedirectUrl(origin, path) || seen.has(path)) continue;
+
+    seen.add(path);
+    result.push({
+      id: redirect.id || createRedirectId(),
+      label: (redirect.label ?? '').trim() || path,
+      path,
+    });
+  }
+
+  return result;
+}
+
 export function defaultSnapshotName(origin: string, date = new Date()) {
   return `${origin} ${date.toLocaleString()}`;
 }
@@ -147,6 +190,7 @@ export function summarizeSnapshot(snapshot: ProfileSnapshot): SnapshotSummary {
     updatedAt: snapshot.updatedAt,
     sizeBytes: snapshot.sizeBytes,
     storageTypes: snapshot.storageTypes,
+    redirects: snapshot.redirects ?? [],
     cookieCount: snapshot.cookies.length,
     localStorageCount: Object.keys(snapshot.localStorage).length,
     sessionStorageCount: Object.keys(snapshot.sessionStorage).length,
